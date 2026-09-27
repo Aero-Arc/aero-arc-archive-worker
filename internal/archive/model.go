@@ -11,6 +11,7 @@ import (
 	"time"
 )
 
+// MaxSourceBytes bounds each immutable source fragment before compression.
 const MaxSourceBytes int64 = 8 << 20
 
 var identity = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$`)

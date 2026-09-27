@@ -94,10 +94,16 @@ func TestDurableAdmissionAndLeaseTakeover(t *testing.T) {
 type publicationObjects struct {
 	calls int
 	delay time.Duration
+	renew func() error
 }
 
 func (o *publicationObjects) PutVerified(context.Context, string, []byte, string) error {
 	o.calls++
+	if o.renew != nil {
+		if err := o.renew(); err != nil {
+			return err
+		}
+	}
 	time.Sleep(o.delay)
 	return nil
 }
@@ -158,6 +164,25 @@ func TestManifestPublicationFencesExpiredAndReplacedWorkers(t *testing.T) {
 		t.Fatal(err)
 	}
 	o.delay = 0
+	// Renewal must remain available while publication is inside object I/O.
+	o.renew = func() error {
+		renewCtx, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
+		defer cancel()
+		return s.Renew(renewCtx, current)
+	}
+	if _, err = s.Publish(ctx, current, "probe/manifest.json", []byte("{}"), o); err != nil {
+		t.Fatalf("upload blocked its own renewal: %v", err)
+	}
+	// Use another job for the real filesystem verification below.
+	j.EventID = "local-event"
+	j.Revision = "2"
+	if _, err = s.Enqueue(ctx, j); err != nil {
+		t.Fatal(err)
+	}
+	current, err = s.Claim(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	dir := t.TempDir()
 	local, err := objectstore.Open(ctx, "local", dir, "", "")
 	if err != nil {
@@ -171,7 +196,7 @@ func TestManifestPublicationFencesExpiredAndReplacedWorkers(t *testing.T) {
 	if raw, err := os.ReadFile(filepath.Join(dir, result.Key)); err != nil || archive.Hash(raw) != result.SHA256 {
 		t.Fatalf("published bytes not verified: %v", err)
 	}
-	if result.Key != "prefix/generations/3/manifest.json" {
+	if result.Key != "prefix/generations/1/manifest.json" {
 		t.Fatalf("manifest key lacks generation: %s", result.Key)
 	}
 	record, err = s.Get(ctx, j.EventID)

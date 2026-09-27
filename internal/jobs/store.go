@@ -14,7 +14,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// ErrConflict identifies changed content under an existing event or revision.
 var ErrConflict = errors.New("archive event or revision identity conflict")
+
+// ErrLease means the worker generation is expired, replaced, or already finished.
 var ErrLease = errors.New("archive job lease lost")
 
 // Store owns the durable archive inbox and fenced job lifecycle.
@@ -161,8 +164,9 @@ func (s *Store) Finish(ctx context.Context, r Record, result archive.Result, bui
 
 // Publish verifies the live generation before writing a generation-scoped
 // manifest and atomically publishes its verified metadata as the ready result.
-// The row lock excludes takeover during publication. A lease that expires during
-// the upload fails the final database-time fence; any uploaded object is an
+// Storage I/O holds no database lock, allowing independent lease renewal. A
+// lease lost during upload fails the final database-time/generation fence; any
+// uploaded object is an
 // unreferenced candidate, never an authoritative ready manifest. Consumers must
 // discover manifests from ready job results, not by listing the bucket.
 //
@@ -170,13 +174,8 @@ func (s *Store) Finish(ctx context.Context, r Record, result archive.Result, bui
 // key and raw identify the prepared manifest; objects verifies immutable writes.
 // Returns: committed manifest metadata or a lease, upload, or database error.
 func (s *Store) Publish(ctx context.Context, r Record, key string, raw []byte, objects archive.Objects) (archive.Result, error) {
-	tx, err := s.DB.Begin(ctx)
-	if err != nil {
-		return archive.Result{}, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
 	var generation int64
-	err = tx.QueryRow(ctx, `SELECT generation FROM archive_jobs WHERE event_id=$1 AND generation=$2 AND state='working' AND lease_until>clock_timestamp() FOR UPDATE`, r.Job.EventID, r.Generation).Scan(&generation)
+	err := s.DB.QueryRow(ctx, `SELECT generation FROM archive_jobs WHERE event_id=$1 AND generation=$2 AND state='working' AND lease_until>clock_timestamp()`, r.Job.EventID, r.Generation).Scan(&generation)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return archive.Result{}, ErrLease
 	}
@@ -192,15 +191,12 @@ func (s *Store) Publish(ctx context.Context, r Record, key string, raw []byte, o
 	if err != nil {
 		return archive.Result{}, err
 	}
-	tag, err := tx.Exec(ctx, `UPDATE archive_jobs SET state='ready',result=$3,last_error='',lease_until=NULL WHERE event_id=$1 AND generation=$2 AND state='working' AND lease_until>clock_timestamp()`, r.Job.EventID, r.Generation, encoded)
+	tag, err := s.DB.Exec(ctx, `UPDATE archive_jobs SET state='ready',result=$3,last_error='',lease_until=NULL WHERE event_id=$1 AND generation=$2 AND state='working' AND lease_until>clock_timestamp()`, r.Job.EventID, r.Generation, encoded)
 	if err != nil {
 		return archive.Result{}, err
 	}
 	if tag.RowsAffected() != 1 {
 		return archive.Result{}, ErrLease
-	}
-	if err = tx.Commit(ctx); err != nil {
-		return archive.Result{}, err
 	}
 	return result, nil
 }
