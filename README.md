@@ -27,3 +27,10 @@ Integration tests require an isolated database. See [CONTRIBUTING.md](CONTRIBUTI
 ## License
 
 Mozilla Public License 2.0. Contributions require a DCO sign-off.
+
+Manifest publication checks the active PostgreSQL lease under a row lock before
+upload and again before committing readiness. Manifest keys include the worker
+lease generation. An upload that finishes after lease expiry can leave an orphan
+candidate, but cannot become a ready result or overwrite another generation.
+Consumers must obtain the manifest key from a job in `ready` state; bucket listing
+is not archive discovery or proof of publication.

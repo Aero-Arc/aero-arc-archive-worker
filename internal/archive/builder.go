@@ -27,10 +27,17 @@ type Result struct {
 	Bytes  int64  `json:"bytes"`
 }
 
+// PublishManifest must fence publication under the current durable job lease.
+// It returns verified metadata only after the ready result commits.
+type PublishManifest func(context.Context, string, []byte) (Result, error)
+
 // Build verifies snapshot fragments, uploads deterministic compressed chunks,
-// and publishes the manifest last. Partial failures are safe to retry with the
+// and passes the manifest to the fenced publisher last. Partial failures are safe to retry with the
 // identical job; a mutable snapshot or corrupt upload fails without publication.
-func Build(ctx context.Context, j Job, source Snapshot, objects Objects) (Result, error) {
+func Build(ctx context.Context, j Job, source Snapshot, objects Objects, publish PublishManifest) (Result, error) {
+	if publish == nil {
+		return Result{}, fmt.Errorf("fenced manifest publisher required")
+	}
 	if err := j.Validate(); err != nil {
 		return Result{}, err
 	}
@@ -71,8 +78,5 @@ func Build(ctx context.Context, j Job, source Snapshot, objects Objects) (Result
 		return Result{}, err
 	}
 	key := prefix + "/manifest.json"
-	if err = objects.PutVerified(ctx, key, raw, "application/json"); err != nil {
-		return Result{}, err
-	}
-	return Result{Key: key, SHA256: Hash(raw), Bytes: int64(len(raw))}, nil
+	return publish(ctx, key, raw)
 }

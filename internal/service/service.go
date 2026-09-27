@@ -154,7 +154,9 @@ func (s *Service) execute(ctx context.Context, job jobs.Record) {
 			}
 		}
 	}()
-	result, err := archive.Build(attempt, job.Job, s.Source, s.Objects)
+	result, err := archive.Build(attempt, job.Job, s.Source, s.Objects, func(ctx context.Context, key string, raw []byte) (archive.Result, error) {
+		return s.Jobs.Publish(ctx, job, key, raw, s.Objects)
+	})
 	cancel()
 	if renewErr := <-renewDone; renewErr != nil {
 		s.Log.Error("archive lease lost", "event_id", job.Job.EventID, "error", renewErr)
@@ -165,6 +167,10 @@ func (s *Service) execute(ctx context.Context, job jobs.Record) {
 	}
 	finish, stop := context.WithTimeout(ctx, 5*time.Second)
 	defer stop()
+	if err == nil {
+		s.Log.Info("archive ready", "event_id", job.Job.EventID, "manifest", result.Key)
+		return
+	}
 	if finishErr := s.Jobs.Finish(finish, job, result, err); finishErr != nil {
 		s.Log.Error("archive commit failed", "event_id", job.Job.EventID, "error", finishErr)
 		return

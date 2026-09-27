@@ -49,14 +49,14 @@ func fixture() (archive.Job, source) {
 func TestManifestLastAndDeterministicRetry(t *testing.T) {
 	j, s := fixture()
 	o := &objects{values: map[string][]byte{}}
-	result, err := archive.Build(context.Background(), j, s, o)
+	result, err := archive.Build(context.Background(), j, s, o, testPublisher(o))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if o.order[len(o.order)-1] != result.Key {
 		t.Fatal("manifest not last")
 	}
-	again, err := archive.Build(context.Background(), j, s, o)
+	again, err := archive.Build(context.Background(), j, s, o, testPublisher(o))
 	if err != nil || result != again {
 		t.Fatalf("retry changed identity: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestCorruptSourceCannotPublish(t *testing.T) {
 	j, s := fixture()
 	s["telemetry"] = []byte("[]")
 	o := &objects{values: map[string][]byte{}}
-	if _, err := archive.Build(context.Background(), j, s, o); err == nil {
+	if _, err := archive.Build(context.Background(), j, s, o, testPublisher(o)); err == nil {
 		t.Fatal("corrupt source accepted")
 	}
 	for k := range o.values {
@@ -97,11 +97,11 @@ func TestCorruptSourceCannotPublish(t *testing.T) {
 func TestInterruptedUploadCanResume(t *testing.T) {
 	j, s := fixture()
 	o := &objects{values: map[string][]byte{}, fail: 2}
-	if _, err := archive.Build(context.Background(), j, s, o); err == nil {
+	if _, err := archive.Build(context.Background(), j, s, o, testPublisher(o)); err == nil {
 		t.Fatal("failure ignored")
 	}
 	o.fail = 0
-	if _, err := archive.Build(context.Background(), j, s, o); err != nil {
+	if _, err := archive.Build(context.Background(), j, s, o, testPublisher(o)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -118,5 +118,14 @@ func TestCoverageRequiresAllCategoriesAndExplicitGaps(t *testing.T) {
 	j.Sources = j.Sources[:len(j.Sources)-1]
 	if j.Validate() == nil {
 		t.Fatal("missing missions accepted")
+	}
+}
+
+func testPublisher(o archive.Objects) archive.PublishManifest {
+	return func(ctx context.Context, key string, raw []byte) (archive.Result, error) {
+		if err := o.PutVerified(ctx, key, raw, "application/json"); err != nil {
+			return archive.Result{}, err
+		}
+		return archive.Result{Key: key, SHA256: archive.Hash(raw), Bytes: int64(len(raw))}, nil
 	}
 }
