@@ -134,31 +134,23 @@ func (s *Service) execute(ctx context.Context, job jobs.Record) {
 	attempt, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
 	renewDone := make(chan error, 1)
+	stopRenew := make(chan struct{})
 	go func() {
 		ticker := time.NewTicker(15 * time.Second)
 		defer ticker.Stop()
-		for {
-			select {
-			case <-attempt.Done():
-				renewDone <- nil
-				return
-			case <-ticker.C:
-				renewal, stop := context.WithTimeout(attempt, 5*time.Second)
-				err := s.Jobs.Renew(renewal, job)
-				stop()
-				if err != nil {
-					cancel()
-					renewDone <- err
-					return
-				}
-			}
+		err := renewLease(attempt, stopRenew, ticker.C, func(ctx context.Context) error { return s.Jobs.Renew(ctx, job) })
+		if err != nil {
+			cancel()
 		}
+		renewDone <- err
 	}()
 	result, err := archive.Build(attempt, job.Job, s.Source, s.Objects, func(ctx context.Context, key string, raw []byte) (archive.Result, error) {
 		return s.Jobs.Publish(ctx, job, key, raw, s.Objects)
 	})
+	close(stopRenew)
+	renewErr := <-renewDone
 	cancel()
-	if renewErr := <-renewDone; renewErr != nil {
+	if renewErr != nil && err != nil {
 		s.Log.Error("archive lease lost", "event_id", job.Job.EventID, "error", renewErr)
 		return
 	}
@@ -208,4 +200,29 @@ func (s *Service) Serve(ctx context.Context, address string) error {
 	}
 	<-done
 	return nil
+}
+
+// renewLease stops scheduling when the build finishes, while allowing an already
+// running renewal its own bounded budget. Build completion must not cancel it.
+func renewLease(ctx context.Context, stop <-chan struct{}, ticks <-chan time.Time, renew func(context.Context) error) error {
+	for {
+		select {
+		case <-stop:
+			return nil
+		default:
+		}
+		select {
+		case <-stop:
+			return nil
+		case <-ctx.Done():
+			return nil
+		case <-ticks:
+			renewal, cancel := context.WithTimeout(ctx, 5*time.Second)
+			err := renew(renewal)
+			cancel()
+			if err != nil {
+				return err
+			}
+		}
+	}
 }
