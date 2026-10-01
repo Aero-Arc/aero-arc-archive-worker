@@ -1,0 +1,64 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+  pull-requests: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: archive-test
+          POSTGRES_DB: archive
+        ports: ['5432:5432']
+        options: --health-cmd="pg_isready -U postgres" --health-interval=5s --health-timeout=3s --health-retries=10
+    env:
+      AERO_ARCHIVE_TEST_S3_ENDPOINT: http://localhost:9090
+      AERO_ARCHIVE_TEST_S3_BUCKET: archive-test
+      AWS_ACCESS_KEY_ID: archive-test
+      AWS_SECRET_ACCESS_KEY: archive-test
+      AWS_EC2_METADATA_DISABLED: 'true'
+      STORAGE_EMULATOR_HOST: http://localhost:4443
+      AERO_ARCHIVE_TEST_DATABASE_URL: postgres://postgres:archive-test@localhost:5432/archive?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-go@v5
+        with: {go-version-file: go.mod, cache: true}
+      - name: Start pinned object-store API emulators
+        run: |
+          docker run -d --name archive-s3 -p 9090:9090 adobe/s3mock:4.10.0
+          docker run -d --name archive-gcs -p 4443:4443 fsouza/fake-gcs-server:1.52.3 -scheme http -port 4443 -public-host localhost:4443
+          for port in 9090 4443; do
+            ready=false
+            for attempt in $(seq 1 60); do
+              if curl -s -o /dev/null "http://localhost:$port/"; then ready=true; break; fi
+              sleep 1
+            done
+            test "$ready" = true
+          done
+      - run: make build test test-race vet integration
+      - name: Object-store logs
+        if: failure()
+        run: |
+          docker logs archive-s3
+          docker logs archive-gcs
+  lint:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-go@v5
+        with: {go-version-file: go.mod, cache: true}
+      - uses: golangci/golangci-lint-action@v9
+        with: {only-new-issues: true, version: v2.12}

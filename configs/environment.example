@@ -1,0 +1,15 @@
+# Internal worker listener; terminate authenticated TLS at the deployment ingress.
+AERO_ARCHIVE_ADDRESS=127.0.0.1:8092
+AERO_ARCHIVE_DATABASE_URL=postgres://archive:CHANGE_ME@localhost:5432/archive?sslmode=require
+AERO_ARCHIVE_API_URL=https://api.internal.example
+AERO_ARCHIVE_SERVICE_TOKEN=REPLACE_WITH_A_SERVICE_CREDENTIAL
+AERO_ARCHIVE_BACKEND=s3
+AERO_ARCHIVE_BUCKET=aero-arc-evidence
+AWS_REGION=us-east-1
+# Use workload identity / the provider default credential chain.
+# GCS: AERO_ARCHIVE_BACKEND=gcs
+# Local development only:
+# AERO_ARCHIVE_BACKEND=local
+# AERO_ARCHIVE_BUCKET=/tmp/aero-arc-archives
+# AERO_ARCHIVE_ALLOW_HTTP=true
+# AERO_ARCHIVE_S3_ENDPOINT=http://127.0.0.1:9000
